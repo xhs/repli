@@ -28,6 +28,9 @@ type Config struct {
 	ReadBatchSize     int    `short:"B" long:"read-batch-size" description:"Batch size of Redis reading pipeline" value-name:"<INT>" default:"30"`
 	ReadBatchLatency  int    `short:"L" long:"read-batch-latency" description:"Maximum milliseconds before a batch is read" value-name:"<MILLISECONDS>" default:"50"`
 	EventQueueSize    int    `short:"s" long:"event-queue-size" description:"Size of keyspace event queue" value-name:"<INT>" default:"10000"`
+	ReadTimeout       int    `long:"read-timeout" description:"Read timeout in seconds" value-name:"<SECONDS>" default:"5"`
+	WriteTimeout      int    `long:"write-timeout" description:"Write timeout in seconds" value-name:"<SECONDS>" default:"5"`
+	MaxRetries        int    `long:"max-retries" description:"Maximum number of retries before giving up" value-name:"<INT>" default:"10"`
 	MinTTL            int    `short:"T" long:"min-ttl" description:"Minimum TTL in seconds, keys with remaining TTL less than this value will be ignored" value-name:"<SECONDS>" default:"3"`
 	ReportInterval    int    `short:"i" long:"report-interval" description:"Interval seconds to log status report" value-name:"<SECONDS>" default:"5"`
 }
@@ -121,21 +124,28 @@ func main() {
 	for i := 0; i < config.ReplicatorNumber; i++ {
 		go func() {
 			reader := redis.NewClient(&redis.Options{
-				Addr: config.SourceEndpoint,
-				DB:   config.RedisDatabase,
+				Addr:        config.SourceEndpoint,
+				DB:          config.RedisDatabase,
+				ReadTimeout: time.Second * time.Duration(config.ReadTimeout),
 			})
 			defer reader.Close()
 
 			var writer RedisWriter
 			if config.ClusterMode {
 				writer = redis.NewClusterClient(&redis.ClusterOptions{
-					Addrs: []string{config.TargetEndpoint},
+					Addrs:        []string{config.TargetEndpoint},
+					ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
+					WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
+					MaxRetries:   config.MaxRetries,
 				})
 
 			} else {
 				writer = redis.NewClient(&redis.Options{
-					Addr: config.TargetEndpoint,
-					DB:   config.RedisDatabase,
+					Addr:         config.TargetEndpoint,
+					DB:           config.RedisDatabase,
+					ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
+					WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
+					MaxRetries:   config.MaxRetries,
 				})
 			}
 			defer writer.Close()
