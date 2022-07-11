@@ -175,7 +175,7 @@ func main() {
 						if err != nil {
 							l.WithFields(log.Fields{
 								"error": err,
-							}).Error("failed to write full batch")
+							}).Warn("failed to write full batch")
 						}
 
 						for j, result := range results {
