@@ -37,7 +37,7 @@ Help Options:
 ### Running in action
 
 ```
-./repli -f 172.20.33.50:13511 -t 10.218.75.68:13502 -c -n 2 -s 10000000 -b 50 -l 100 -B 30 -L 50
+./repli -f 172.20.33.50:13511 -t 10.218.75.68:13502 -c run -n 2 -s 10000000 -b 50 -l 100 -B 30 -L 50
 
 ...
 INFO[1350] status report                                 eventsArrived=369 eventsProcessed=369 keysQueried=367 keysReplicated=360 queued=0/10000000 replicators=2 source="172.20.33.50:13511" target="10.218.75.68:13502"
