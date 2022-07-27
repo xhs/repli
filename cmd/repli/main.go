@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -127,6 +128,34 @@ func main() {
 		scanner := bufio.NewScanner(f)
 		scanner.Split(bufio.ScanLines)
 
+		cursor := 0
+		cursorFilename := redoConfig.RedoFile + ".cur"
+		_, err = os.Stat(cursorFilename)
+		var cursorFile *os.File
+		if os.IsNotExist(err) {
+			cursorFile, err = os.Create(cursorFilename)
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			cursorFile, err = os.Open(cursorFilename)
+			if err != nil {
+				panic(err)
+			}
+
+			buf := make([]byte, 16)
+			n, err := cursorFile.Read(buf)
+			if err != nil {
+				panic(err)
+			}
+
+			cursor, err = strconv.Atoi(string(buf[:n]))
+			if err != nil {
+				panic(err)
+			}
+		}
+		defer cursorFile.Close()
+
 		reader := redis.NewClient(&redis.Options{
 			Addr:        config.SourceEndpoint,
 			DB:          config.RedisDatabase,
@@ -173,7 +202,15 @@ func main() {
 		log.SetFormatter(&log.TextFormatter{})
 
 		var item LogItem
+		ptr := 0
 		for scanner.Scan() {
+			ptr += 1
+			if ptr <= cursor {
+				// Discard lines
+				scanner.Text() // :(
+				continue
+			}
+
 			err = json.Unmarshal(scanner.Bytes(), &item)
 			if err != nil {
 				l.Warn(err)
@@ -211,6 +248,8 @@ func main() {
 				continue
 			}
 		}
+
+		cursorFile.WriteString(fmt.Sprintf("%v", ptr))
 
 		return
 	}
