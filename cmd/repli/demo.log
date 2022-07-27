@@ -1,0 +1,3 @@
+{"level":"info","msg":"{172.20.34.140:13500 true 10.218.74.151:13502 0 true 4 200 100 50 25 10000000 3 5 10 3 10}","source":"172.20.34.140:13500","target":"10.218.74.151:13502","time":"2022-07-26T04:02:34Z"}
+{"eventsArrived":842,"eventsProcessed":842,"keysQueried":837,"keysReplicated":786,"level":"info","msg":"status report","queued":"0/10000000","replicators":4,"source":"172.20.34.140:13500","target":"10.218.74.151:13502","time":"2022-07-26T04:02:44Z"}
+{"level":"error","msg":"failed","key":"foo"}

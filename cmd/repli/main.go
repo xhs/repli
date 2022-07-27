@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -13,27 +16,20 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+var mode string
 var ctx = context.Background()
 var config Config
 var parser = flags.NewParser(&config, flags.Default)
 
 type Config struct {
-	SourceEndpoint    string `short:"f" long:"from" description:"Endpoint of source Redis instance" value-name:"[<IP>]:<PORT>" required:"true"`
-	ReadOnly          bool   `long:"read-only" description:"Send readonly command before replicating" value-name:"<BOOL>"`
-	TargetEndpoint    string `short:"t" long:"to" description:"Endpoint of target Redis instance/cluster" value-name:"[<IP>]:<PORT>" required:"true"`
-	RedisDatabase     int    `short:"d" long:"database" description:"Redis database to replicate" value-name:"<INT>" default:"0"`
-	ClusterMode       bool   `short:"c" long:"cluster" description:"Replicate to Redis cluster" value-name:"<BOOL>"`
-	ReplicatorNumber  int    `short:"n" long:"replicator-number" description:"Number of concurrent replicators" value-name:"<INT>" default:"1"`
-	WriteBatchSize    int    `short:"b" long:"write-batch-size" description:"Batch size of Redis writing pipeline" value-name:"<INT>" default:"50"`
-	WriteBatchLatency int    `short:"l" long:"write-batch-latency" description:"Maximum milliseconds before a batch is written" value-name:"<MILLISECONDS>" default:"100"`
-	ReadBatchSize     int    `short:"B" long:"read-batch-size" description:"Batch size of Redis reading pipeline" value-name:"<INT>" default:"30"`
-	ReadBatchLatency  int    `short:"L" long:"read-batch-latency" description:"Maximum milliseconds before a batch is read" value-name:"<MILLISECONDS>" default:"50"`
-	EventQueueSize    int    `short:"s" long:"event-queue-size" description:"Size of keyspace event queue" value-name:"<INT>" default:"10000"`
-	ReadTimeout       int    `long:"read-timeout" description:"Read timeout in seconds" value-name:"<SECONDS>" default:"5"`
-	WriteTimeout      int    `long:"write-timeout" description:"Write timeout in seconds" value-name:"<SECONDS>" default:"5"`
-	MaxRetries        int    `long:"max-retries" description:"Maximum number of retries before giving up" value-name:"<INT>" default:"10"`
-	MinTTL            int    `short:"T" long:"min-ttl" description:"Minimum TTL in seconds, keys with remaining TTL less than this value will be ignored" value-name:"<SECONDS>" default:"3"`
-	ReportInterval    int    `short:"i" long:"report-interval" description:"Interval seconds to log status report" value-name:"<SECONDS>" default:"5"`
+	SourceEndpoint string `short:"f" long:"from" description:"Endpoint of source Redis instance" value-name:"[<IP>]:<PORT>" required:"true"`
+	ReadOnly       bool   `long:"read-only" description:"Send READONLY command before replicating" value-name:"<BOOL>"`
+	TargetEndpoint string `short:"t" long:"to" description:"Endpoint of target Redis instance/cluster" value-name:"[<IP>]:<PORT>" required:"true"`
+	RedisDatabase  int    `short:"d" long:"database" description:"Redis database to replicate" value-name:"<INT>" default:"0"`
+	ClusterMode    bool   `short:"c" long:"cluster" description:"Replicate to Redis cluster" value-name:"<BOOL>"`
+	ReadTimeout    int    `long:"read-timeout" description:"Read timeout in seconds" value-name:"<SECONDS>" default:"5"`
+	WriteTimeout   int    `long:"write-timeout" description:"Write timeout in seconds" value-name:"<SECONDS>" default:"5"`
+	MaxRetries     int    `long:"max-retries" description:"Maximum number of retries before giving up" value-name:"<INT>" default:"10"`
 }
 
 type KeySpaceEvent struct {
@@ -100,6 +96,12 @@ type RedisWriter interface {
 	Close() error
 }
 
+type LogItem struct {
+	Level   string `json:"level"`
+	Message string `json:"msg"`
+	Key     string `json:"key,omitempty"`
+}
+
 func init() {
 	log.SetLevel(log.InfoLevel)
 	log.SetFormatter(&log.JSONFormatter{})
@@ -115,6 +117,101 @@ func main() {
 		"source": config.SourceEndpoint,
 		"target": config.TargetEndpoint,
 	})
+
+	if mode == "REDO" {
+		f, err := os.Open(redoConfig.RedoFile)
+		if err != nil {
+			panic(err)
+		}
+
+		scanner := bufio.NewScanner(f)
+		scanner.Split(bufio.ScanLines)
+
+		reader := redis.NewClient(&redis.Options{
+			Addr:        config.SourceEndpoint,
+			DB:          config.RedisDatabase,
+			ReadTimeout: time.Second * time.Duration(config.ReadTimeout),
+			PoolSize:    1,
+			OnConnect: func(ctx context.Context, conn *redis.Conn) error {
+				if config.ReadOnly {
+					ro := conn.ReadOnly(ctx)
+					if ro.Err() != nil {
+						l.WithFields(log.Fields{
+							"error": ro.Err(),
+						}).Fatal("failed to execute READONLY command")
+					}
+				}
+				return nil
+			},
+		})
+		defer reader.Close()
+
+		var writer RedisWriter
+		if config.ClusterMode {
+			writer = redis.NewClusterClient(&redis.ClusterOptions{
+				Addrs:        []string{config.TargetEndpoint},
+				ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
+				WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
+				MaxRetries:   config.MaxRetries,
+				PoolSize:     1,
+			})
+
+		} else {
+			writer = redis.NewClient(&redis.Options{
+				Addr:         config.TargetEndpoint,
+				DB:           config.RedisDatabase,
+				ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
+				WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
+				MaxRetries:   config.MaxRetries,
+				PoolSize:     1,
+			})
+		}
+		defer writer.Close()
+
+		log.SetFormatter(&log.TextFormatter{})
+
+		var item LogItem
+		for scanner.Scan() {
+			err = json.Unmarshal(scanner.Bytes(), &item)
+			if err != nil {
+				l.Warn(err)
+				continue
+			}
+
+			if item.Level != "error" || !strings.HasPrefix(item.Message, "failed") {
+				continue
+			}
+
+			l.WithFields(log.Fields{
+				"key": item.Key,
+			}).Info("redo replication")
+
+			dump := reader.Dump(ctx, item.Key)
+			if dump.Err() != nil {
+				l.Error(dump.Err())
+				continue
+			}
+			dumped, err := dump.Bytes()
+			if err != nil {
+				l.Error(err)
+				continue
+			}
+
+			pttl := reader.PTTL(ctx, item.Key)
+			if pttl.Err() != nil {
+				l.Error(pttl.Err())
+				continue
+			}
+
+			restore := writer.RestoreReplace(ctx, item.Key, pttl.Val(), string(dumped))
+			if restore.Err() != nil {
+				l.Error(restore.Err())
+				continue
+			}
+		}
+
+		return
+	}
 
 	l.Info(config)
 
@@ -136,7 +233,7 @@ func main() {
 		panic(err)
 	}
 
-	eventCh := make(chan *KeySpaceEvent, config.EventQueueSize)
+	eventCh := make(chan *KeySpaceEvent, runConfig.EventQueueSize)
 
 	var received int64 = 0
 	var accepted int64 = 0
@@ -144,7 +241,7 @@ func main() {
 	var written int64 = 0
 
 	go func(eventCh chan *KeySpaceEvent) {
-		keyspaceEventCh := sub.Channel(redis.WithChannelSize(config.EventQueueSize))
+		keyspaceEventCh := sub.Channel(redis.WithChannelSize(runConfig.EventQueueSize))
 		for event := range keyspaceEventCh {
 			splits := strings.SplitN(event.Channel, ":", 2)
 			if len(splits) != 2 {
@@ -163,7 +260,7 @@ func main() {
 		}
 	}(eventCh)
 
-	for i := 0; i < config.ReplicatorNumber; i++ {
+	for i := 0; i < runConfig.ReplicatorNumber; i++ {
 		go func() {
 			reader := redis.NewClient(&redis.Options{
 				Addr:        config.SourceEndpoint,
@@ -176,7 +273,7 @@ func main() {
 						if ro.Err() != nil {
 							l.WithFields(log.Fields{
 								"error": ro.Err(),
-							}).Fatal("failed to execute readonly command")
+							}).Fatal("failed to execute READONLY command")
 						}
 					}
 					return nil
@@ -213,11 +310,11 @@ func main() {
 					select {
 					case cmd := <-writeCh:
 						commands = append(commands, cmd)
-						if len(commands) < config.WriteBatchSize {
+						if len(commands) < runConfig.WriteBatchSize {
 							continue
 						}
 
-					case <-time.After(time.Millisecond * time.Duration(config.WriteBatchLatency)):
+					case <-time.After(time.Millisecond * time.Duration(runConfig.WriteBatchLatency)):
 						l.Debug("write batch timeout")
 					}
 
@@ -273,11 +370,11 @@ func main() {
 					select {
 					case cmd := <-readCh:
 						commands = append(commands, cmd)
-						if len(commands) < config.ReadBatchSize {
+						if len(commands) < runConfig.ReadBatchSize {
 							continue
 						}
 
-					case <-time.After(time.Millisecond * time.Duration(config.ReadBatchLatency)):
+					case <-time.After(time.Millisecond * time.Duration(runConfig.ReadBatchLatency)):
 						l.Debug("read batch timeout")
 					}
 
@@ -321,7 +418,7 @@ func main() {
 										continue
 									}
 
-									if cmd.TTL.Val().Seconds() < float64(config.MinTTL) {
+									if cmd.TTL.Val().Seconds() < float64(runConfig.MinTTL) {
 										// No need to replicate expiring key
 										l.WithFields(log.Fields{
 											"key": cmd.Key,
@@ -329,7 +426,7 @@ func main() {
 										continue
 									}
 
-									ttl := time.Second * time.Duration(cmd.TTL.Val().Seconds()-(float64(config.MinTTL-1)))
+									ttl := time.Second * time.Duration(cmd.TTL.Val().Seconds()-(float64(runConfig.MinTTL-1)))
 									writeCh <- WriteCommand{}.Expire(cmd.Key, ttl)
 								}
 							case "DUMP":
@@ -395,7 +492,7 @@ func main() {
 	var lastAccepted int64 = 0
 	var lastRead int64 = 0
 	var lastWritten int64 = 0
-	ticker := time.NewTicker(time.Second * time.Duration(config.ReportInterval))
+	ticker := time.NewTicker(time.Second * time.Duration(runConfig.ReportInterval))
 	for {
 		<-ticker.C
 
@@ -410,14 +507,14 @@ func main() {
 		lastWritten = written
 
 		queued := len(eventCh)
-		if queued >= config.EventQueueSize {
+		if queued >= runConfig.EventQueueSize {
 			l.WithFields(log.Fields{
 				"eventsArrived":   arrived,
 				"eventsProcessed": processed,
 				"keysQueried":     queried,
 				"keysReplicated":  replicated,
-				"replicators":     config.ReplicatorNumber,
-				"queued":          fmt.Sprint(len(eventCh), "/", config.EventQueueSize),
+				"replicators":     runConfig.ReplicatorNumber,
+				"queued":          fmt.Sprint(len(eventCh), "/", runConfig.EventQueueSize),
 			}).Error("keyspace event queue is full")
 
 		} else {
@@ -426,8 +523,8 @@ func main() {
 				"eventsProcessed": processed,
 				"keysQueried":     queried,
 				"keysReplicated":  replicated,
-				"replicators":     config.ReplicatorNumber,
-				"queued":          fmt.Sprint(len(eventCh), "/", config.EventQueueSize),
+				"replicators":     runConfig.ReplicatorNumber,
+				"queued":          fmt.Sprint(len(eventCh), "/", runConfig.EventQueueSize),
 			}).Info("status report")
 		}
 	}
