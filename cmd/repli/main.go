@@ -19,6 +19,7 @@ var parser = flags.NewParser(&config, flags.Default)
 
 type Config struct {
 	SourceEndpoint    string `short:"f" long:"from" description:"Endpoint of source Redis instance" value-name:"[<IP>]:<PORT>" required:"true"`
+	ReadOnly          bool   `long:"read-only" description:"Send readonly command before replicating" value-name:"<BOOL>"`
 	TargetEndpoint    string `short:"t" long:"to" description:"Endpoint of target Redis instance/cluster" value-name:"[<IP>]:<PORT>" required:"true"`
 	RedisDatabase     int    `short:"d" long:"database" description:"Redis database to replicate" value-name:"<INT>" default:"0"`
 	ClusterMode       bool   `short:"c" long:"cluster" description:"Replicate to Redis cluster" value-name:"<BOOL>"`
@@ -78,6 +79,8 @@ func main() {
 		"target": config.TargetEndpoint,
 	})
 
+	l.Info(config)
+
 	subscriber := redis.NewClient(&redis.Options{
 		Addr: config.SourceEndpoint,
 		DB:   config.RedisDatabase,
@@ -127,6 +130,17 @@ func main() {
 				Addr:        config.SourceEndpoint,
 				DB:          config.RedisDatabase,
 				ReadTimeout: time.Second * time.Duration(config.ReadTimeout),
+				OnConnect: func(ctx context.Context, conn *redis.Conn) error {
+					if config.ReadOnly {
+						ro := conn.ReadOnly(ctx)
+						if ro.Err() != nil {
+							l.WithFields(log.Fields{
+								"error": ro.Err(),
+							}).Fatal("failed to execute readonly command")
+						}
+					}
+					return nil
+				},
 			})
 			defer reader.Close()
 
