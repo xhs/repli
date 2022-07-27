@@ -138,7 +138,9 @@ func main() {
 					if ro.Err() != nil {
 						l.WithFields(log.Fields{
 							"error": ro.Err(),
-						}).Fatal("failed to execute READONLY command")
+						}).Warn("failed to execute READONLY command")
+
+						return ro.Err()
 					}
 				}
 				return nil
@@ -178,7 +180,7 @@ func main() {
 				continue
 			}
 
-			if item.Level != "error" || !strings.HasPrefix(item.Message, "failed") {
+			if item.Key == "" || item.Level != "error" || !strings.HasPrefix(item.Message, "failed") {
 				continue
 			}
 
@@ -188,18 +190,18 @@ func main() {
 
 			dump := reader.Dump(ctx, item.Key)
 			if dump.Err() != nil {
-				l.Error(dump.Err())
+				l.Warn(dump.Err())
 				continue
 			}
 			dumped, err := dump.Bytes()
 			if err != nil {
-				l.Error(err)
+				l.Warn(err)
 				continue
 			}
 
 			pttl := reader.PTTL(ctx, item.Key)
 			if pttl.Err() != nil {
-				l.Error(pttl.Err())
+				l.Warn(pttl.Err())
 				continue
 			}
 
@@ -273,7 +275,9 @@ func main() {
 						if ro.Err() != nil {
 							l.WithFields(log.Fields{
 								"error": ro.Err(),
-							}).Fatal("failed to execute READONLY command")
+							}).Warn("failed to execute READONLY command")
+
+							return ro.Err()
 						}
 					}
 					return nil
