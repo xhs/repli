@@ -42,11 +42,35 @@ type KeySpaceEvent struct {
 }
 
 type WriteCommand struct {
-	Timestamp int64 // TODO: ignore expired/expiring keys in batch
+	Timestamp int64 // TODO: ignore expired/expiring keys queued in batch
 	Command   string
 	Key       string
 	TTL       time.Duration
 	Bytes     []byte
+}
+
+func (w WriteCommand) Delete(key string) *WriteCommand {
+	w.Timestamp = time.Now().UnixMilli()
+	w.Command = "DELETE"
+	w.Key = key
+	return &w
+}
+
+func (w WriteCommand) Expire(key string, ttl time.Duration) *WriteCommand {
+	w.Timestamp = time.Now().UnixMilli()
+	w.Command = "EXPIRE"
+	w.Key = key
+	w.TTL = ttl
+	return &w
+}
+
+func (w WriteCommand) Restore(key string, ttl time.Duration, value []byte) *WriteCommand {
+	w.Timestamp = time.Now().UnixMilli()
+	w.Command = "RESTORE"
+	w.Key = key
+	w.TTL = ttl
+	w.Bytes = value
+	return &w
 }
 
 type ReadCommand struct {
@@ -54,6 +78,18 @@ type ReadCommand struct {
 	Key     string
 	TTL     *redis.DurationCmd
 	Bytes   *redis.StringCmd
+}
+
+func (r ReadCommand) GetTTL(key string) *ReadCommand {
+	r.Command = "TTL"
+	r.Key = key
+	return &r
+}
+
+func (r ReadCommand) Dump(key string) *ReadCommand {
+	r.Command = "DUMP"
+	r.Key = key
+	return &r
 }
 
 type RedisWriter interface {
@@ -66,6 +102,7 @@ type RedisWriter interface {
 
 func init() {
 	log.SetLevel(log.InfoLevel)
+	log.SetFormatter(&log.JSONFormatter{})
 }
 
 func main() {
@@ -82,8 +119,10 @@ func main() {
 	l.Info(config)
 
 	subscriber := redis.NewClient(&redis.Options{
-		Addr: config.SourceEndpoint,
-		DB:   config.RedisDatabase,
+		Addr:       config.SourceEndpoint,
+		DB:         config.RedisDatabase,
+		MaxRetries: config.MaxRetries,
+		PoolSize:   1,
 	})
 	defer subscriber.Close()
 
@@ -130,6 +169,7 @@ func main() {
 				Addr:        config.SourceEndpoint,
 				DB:          config.RedisDatabase,
 				ReadTimeout: time.Second * time.Duration(config.ReadTimeout),
+				PoolSize:    1,
 				OnConnect: func(ctx context.Context, conn *redis.Conn) error {
 					if config.ReadOnly {
 						ro := conn.ReadOnly(ctx)
@@ -151,6 +191,7 @@ func main() {
 					ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
 					WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
 					MaxRetries:   config.MaxRetries,
+					PoolSize:     1,
 				})
 
 			} else {
@@ -160,6 +201,7 @@ func main() {
 					ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
 					WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
 					MaxRetries:   config.MaxRetries,
+					PoolSize:     1,
 				})
 			}
 			defer writer.Close()
@@ -269,22 +311,26 @@ func main() {
 										"key":   cmd.Key,
 										"error": cmd.TTL.Err(),
 									}).Error("failed to get TTL")
+
 								} else {
+									if cmd.TTL.Val() < 0 {
+										// Very unlikely since we have received _expire_ event
+										l.WithFields(log.Fields{
+											"key": cmd.Key,
+										}).Debug("never-expired key ignored")
+										continue
+									}
+
 									if cmd.TTL.Val().Seconds() < float64(config.MinTTL) {
-										// No need to replicate
+										// No need to replicate expiring key
 										l.WithFields(log.Fields{
 											"key": cmd.Key,
 										}).Debug("expiring key ignored")
 										continue
 									}
 
-									writeCmd := &WriteCommand{
-										Timestamp: time.Now().UnixMilli(),
-										Command:   "EXPIRE",
-										Key:       cmd.Key,
-										TTL:       time.Second * time.Duration(cmd.TTL.Val().Seconds()-(float64(config.MinTTL-1))),
-									}
-									writeCh <- writeCmd
+									ttl := time.Second * time.Duration(cmd.TTL.Val().Seconds()-(float64(config.MinTTL-1)))
+									writeCh <- WriteCommand{}.Expire(cmd.Key, ttl)
 								}
 							case "DUMP":
 								dumped, err := cmd.Bytes.Bytes()
@@ -301,15 +347,10 @@ func main() {
 										"dumpCommandError": cmd.Bytes.Err(),
 										"pttlCommandError": cmd.TTL.Err(),
 									}).Error("failed to dump key")
+
 								} else {
-									writeCmd := &WriteCommand{
-										Timestamp: time.Now().UnixMilli(),
-										Command:   "RESTORE",
-										Key:       cmd.Key,
-										TTL:       time.Millisecond * time.Duration(cmd.TTL.Val().Milliseconds()),
-										Bytes:     dumped,
-									}
-									writeCh <- writeCmd
+									ttl := time.Millisecond * time.Duration(cmd.TTL.Val().Milliseconds())
+									writeCh <- WriteCommand{}.Restore(cmd.Key, ttl, dumped)
 								}
 							}
 						}
@@ -336,29 +377,16 @@ func main() {
 
 				if event.Action == "del" {
 					atomic.AddInt64(&read, 1)
-					writeCmd := &WriteCommand{
-						Timestamp: time.Now().UnixMilli(),
-						Command:   "DELETE",
-						Key:       event.Key,
-					}
-					writeCh <- writeCmd
+					writeCh <- WriteCommand{}.Delete(event.Key)
 					continue
 				}
 
 				if event.Action == "expire" {
-					readCmd := &ReadCommand{
-						Command: "TTL",
-						Key:     event.Key,
-					}
-					readCh <- readCmd
+					readCh <- ReadCommand{}.GetTTL(event.Key)
 					continue
 				}
 
-				readCmd := &ReadCommand{
-					Command: "DUMP",
-					Key:     event.Key,
-				}
-				readCh <- readCmd
+				readCh <- ReadCommand{}.Dump(event.Key)
 			}
 		}()
 	}
@@ -391,6 +419,7 @@ func main() {
 				"replicators":     config.ReplicatorNumber,
 				"queued":          fmt.Sprint(len(eventCh), "/", config.EventQueueSize),
 			}).Error("keyspace event queue is full")
+
 		} else {
 			l.WithFields(log.Fields{
 				"eventsArrived":   arrived,
@@ -399,7 +428,7 @@ func main() {
 				"keysReplicated":  replicated,
 				"replicators":     config.ReplicatorNumber,
 				"queued":          fmt.Sprint(len(eventCh), "/", config.EventQueueSize),
-			}).Info("")
+			}).Info("status report")
 		}
 	}
 }
