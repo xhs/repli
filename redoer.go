@@ -61,7 +61,7 @@ func (r *Redoer) Redo(entry *log.Entry, redoFile string) {
 
 	cursorFilename := redoFile + ".cur"
 	_, err = os.Stat(cursorFilename)
-	if os.IsExist(err) {
+	if !os.IsNotExist(err) {
 		content, err := ioutil.ReadFile(cursorFilename)
 		if err != nil {
 			panic(err)
@@ -74,15 +74,16 @@ func (r *Redoer) Redo(entry *log.Entry, redoFile string) {
 
 	var item RedoLog
 	ctx := context.Background()
-	count := 0
+	offset := 0
 loop:
 	for scanner.Scan() {
-		count += 1
-		if count <= r.cursor {
+		offset += 1
+		if offset <= r.cursor {
 			// Discard processed lines
 			scanner.Text()
 			continue
 		}
+		r.cursor = offset
 
 		err = json.Unmarshal(scanner.Bytes(), &item)
 		if err != nil {

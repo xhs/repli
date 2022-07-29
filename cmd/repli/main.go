@@ -33,6 +33,8 @@ func main() {
 		defer redoer.Close()
 
 		redoer.Redo(l, redoConfig.RedoFile)
+
+		return
 	}
 
 	l.Info(config)
