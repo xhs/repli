@@ -29,6 +29,7 @@ Available commands:
 
 [redo command options]
       -F, --redo-file=<FILENAME>           redo replication from error log
+          --delete-missing-keys            delete keys missing in source from target
 
 [run command options]
       -n, --replicator-number=<INT>               Number of concurrent replicators (default: 1)
