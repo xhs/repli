@@ -18,7 +18,8 @@ Application Options:
   -c, --cluster                                   Replicate to Redis cluster
       --read-timeout=<SECONDS>                    Read timeout in seconds (default: 5)
       --write-timeout=<SECONDS>                   Write timeout in seconds (default: 5)
-      --max-retries=<INT>                         Maximum number of retries before giving up (default: 10)
+      --max-retries=<INT>                         Maximum retries of connecting before giving up (default: 10)
+      --skip-pattern=<PATTERN>                    Key patterns to skip
 
 Help Options:
   -h, --help                                      Show this help message
