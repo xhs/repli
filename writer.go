@@ -40,48 +40,19 @@ func (w WriteCommand) Restore(key string, ttl time.Duration, value []byte) *Writ
 	return &w
 }
 
-type RedisWriter interface {
-	Del(ctx context.Context, key ...string) *redis.IntCmd
-	Expire(ctx context.Context, key string, expiration time.Duration) *redis.BoolCmd
-	RestoreReplace(ctx context.Context, key string, ttl time.Duration, value string) *redis.StatusCmd
-	Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error)
-	Close() error
-}
-
 type Writer struct {
-	WriteBatchSize    int
-	WriteBatchLatency int
+	writeBatchSize    int
+	writeBatchLatency int
 	C                 chan *WriteCommand
 	writer            RedisWriter
 }
 
 func NewWriter(config *CommonConfig, writeBatchSize, writeBatchLatency int) *Writer {
-	var writer RedisWriter
-	if config.ClusterMode {
-		writer = redis.NewClusterClient(&redis.ClusterOptions{
-			Addrs:        []string{config.TargetEndpoint},
-			ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
-			WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
-			MaxRetries:   config.MaxRetries,
-			PoolSize:     1,
-		})
-
-	} else {
-		writer = redis.NewClient(&redis.Options{
-			Addr:         config.TargetEndpoint,
-			DB:           config.RedisDatabase,
-			ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
-			WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
-			MaxRetries:   config.MaxRetries,
-			PoolSize:     1,
-		})
-	}
-
 	return &Writer{
-		WriteBatchSize:    writeBatchSize,
-		WriteBatchLatency: writeBatchLatency,
+		writeBatchSize:    writeBatchSize,
+		writeBatchLatency: writeBatchLatency,
 		C:                 make(chan *WriteCommand),
-		writer:            writer,
+		writer:            config.Writer(),
 	}
 }
 
@@ -97,11 +68,11 @@ func (w *Writer) Run(l *log.Entry, metrics *Metrics) {
 		select {
 		case cmd := <-w.C:
 			commands = append(commands, cmd)
-			if len(commands) < w.WriteBatchSize {
+			if len(commands) < w.writeBatchSize {
 				continue
 			}
 
-		case <-time.After(time.Millisecond * time.Duration(w.WriteBatchLatency)):
+		case <-time.After(time.Millisecond * time.Duration(w.writeBatchLatency)):
 			l.Debug("write batch timeout")
 		}
 

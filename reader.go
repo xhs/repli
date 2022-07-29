@@ -28,38 +28,20 @@ func (r ReadCommand) Dump(key string) *ReadCommand {
 }
 
 type Reader struct {
-	ReadBatchSize    int
-	ReadBatchLatency int
-	MinTTL           int
+	readBatchSize    int
+	readBatchLatency int
+	minTTL           int
 	C                chan *ReadCommand
 	reader           *redis.Client
 }
 
 func NewReader(config *CommonConfig, readBatchSize, readBatchLatency int, minTTL int) *Reader {
 	return &Reader{
-		ReadBatchSize:    readBatchSize,
-		ReadBatchLatency: readBatchLatency,
-		MinTTL:           minTTL,
+		readBatchSize:    readBatchSize,
+		readBatchLatency: readBatchLatency,
+		minTTL:           minTTL,
 		C:                make(chan *ReadCommand),
-		reader: redis.NewClient(&redis.Options{
-			Addr:        config.SourceEndpoint,
-			DB:          config.RedisDatabase,
-			ReadTimeout: time.Second * time.Duration(config.ReadTimeout),
-			PoolSize:    1,
-			OnConnect: func(ctx context.Context, conn *redis.Conn) error {
-				if config.ReadOnly {
-					ro := conn.ReadOnly(ctx)
-					if ro.Err() != nil {
-						log.WithFields(log.Fields{
-							"error": ro.Err(),
-						}).Warn("failed to execute READONLY command")
-
-						return ro.Err()
-					}
-				}
-				return nil
-			},
-		}),
+		reader:           config.Reader(),
 	}
 }
 
@@ -75,11 +57,11 @@ func (r *Reader) Run(writeCh chan *WriteCommand, l *log.Entry, metrics *Metrics)
 		select {
 		case cmd := <-r.C:
 			commands = append(commands, cmd)
-			if len(commands) < r.ReadBatchSize {
+			if len(commands) < r.readBatchSize {
 				continue
 			}
 
-		case <-time.After(time.Millisecond * time.Duration(r.ReadBatchLatency)):
+		case <-time.After(time.Millisecond * time.Duration(r.readBatchLatency)):
 			l.Debug("read batch timeout")
 		}
 
@@ -123,7 +105,7 @@ func (r *Reader) Run(writeCh chan *WriteCommand, l *log.Entry, metrics *Metrics)
 							continue
 						}
 
-						if cmd.TTL.Val().Seconds() < float64(r.MinTTL) {
+						if cmd.TTL.Val().Seconds() < float64(r.minTTL) {
 							// No need to replicate expiring key
 							l.WithFields(log.Fields{
 								"key": cmd.Key,
@@ -131,7 +113,7 @@ func (r *Reader) Run(writeCh chan *WriteCommand, l *log.Entry, metrics *Metrics)
 							continue
 						}
 
-						ttl := time.Second * time.Duration(cmd.TTL.Val().Seconds()-(float64(r.MinTTL-1)))
+						ttl := time.Second * time.Duration(cmd.TTL.Val().Seconds()-(float64(r.minTTL-1)))
 						writeCh <- WriteCommand{}.Expire(cmd.Key, ttl)
 					}
 				case "DUMP":

@@ -35,7 +35,7 @@ func (m *Metrics) Replicated() {
 	atomic.AddInt64(&m.KeysReplicated, 1)
 }
 
-func (m *Metrics) Report(eventCh chan *KeySpaceEvent, reportInterval int, eventQueueSize int) {
+func (m *Metrics) Report(eventCh chan *KeyspaceEvent, reportInterval int, eventQueueSize int) {
 	var lastReceived int64 = 0
 	var lastAccepted int64 = 0
 	var lastQueried int64 = 0

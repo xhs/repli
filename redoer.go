@@ -5,10 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"regexp"
 	"strconv"
-	"strings"
-	"time"
 
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -20,56 +20,27 @@ type RedoLog struct {
 }
 
 type Redoer struct {
-	reader *redis.Client
-	writer RedisWriter
-	cursor int
+	cursor       int
+	skipPatterns []*regexp.Regexp
+	reader       *redis.Client
+	writer       RedisWriter
 }
 
 func NewRedoer(config *CommonConfig) *Redoer {
-	reader := redis.NewClient(&redis.Options{
-		Addr:        config.SourceEndpoint,
-		DB:          config.RedisDatabase,
-		ReadTimeout: time.Second * time.Duration(config.ReadTimeout),
-		PoolSize:    1,
-		OnConnect: func(ctx context.Context, conn *redis.Conn) error {
-			if config.ReadOnly {
-				ro := conn.ReadOnly(ctx)
-				if ro.Err() != nil {
-					log.WithFields(log.Fields{
-						"error": ro.Err(),
-					}).Warn("failed to execute READONLY command")
+	var skipPatterns []*regexp.Regexp
+	for _, pattern := range config.SkipKeyPatterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			panic(err)
+		}
 
-					return ro.Err()
-				}
-			}
-			return nil
-		},
-	})
-
-	var writer RedisWriter
-	if config.ClusterMode {
-		writer = redis.NewClusterClient(&redis.ClusterOptions{
-			Addrs:        []string{config.TargetEndpoint},
-			ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
-			WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
-			MaxRetries:   config.MaxRetries,
-			PoolSize:     1,
-		})
-
-	} else {
-		writer = redis.NewClient(&redis.Options{
-			Addr:         config.TargetEndpoint,
-			DB:           config.RedisDatabase,
-			ReadTimeout:  time.Second * time.Duration(config.ReadTimeout),
-			WriteTimeout: time.Second * time.Duration(config.WriteTimeout),
-			MaxRetries:   config.MaxRetries,
-			PoolSize:     1,
-		})
+		skipPatterns = append(skipPatterns, re)
 	}
 
 	return &Redoer{
-		reader: reader,
-		writer: writer,
+		skipPatterns: skipPatterns,
+		reader:       config.Reader(),
+		writer:       config.Writer(),
 	}
 }
 
@@ -90,38 +61,25 @@ func (r *Redoer) Redo(entry *log.Entry, redoFile string) {
 
 	cursorFilename := redoFile + ".cur"
 	_, err = os.Stat(cursorFilename)
-	var cursorFile *os.File
-	if os.IsNotExist(err) {
-		cursorFile, err = os.Create(cursorFilename)
+	if os.IsExist(err) {
+		content, err := ioutil.ReadFile(cursorFilename)
 		if err != nil {
 			panic(err)
 		}
-	} else {
-		cursorFile, err = os.Open(cursorFilename)
-		if err != nil {
-			panic(err)
-		}
-
-		buf := make([]byte, 32)
-		n, err := cursorFile.Read(buf)
-		if err != nil {
-			panic(err)
-		}
-
-		r.cursor, err = strconv.Atoi(string(buf[:n]))
+		r.cursor, err = strconv.Atoi(string(content))
 		if err != nil {
 			panic(err)
 		}
 	}
-	defer cursorFile.Close()
 
 	var item RedoLog
 	ctx := context.Background()
 	count := 0
+loop:
 	for scanner.Scan() {
 		count += 1
 		if count <= r.cursor {
-			// Discard lines
+			// Discard processed lines
 			scanner.Text()
 			continue
 		}
@@ -132,15 +90,22 @@ func (r *Redoer) Redo(entry *log.Entry, redoFile string) {
 			continue
 		}
 
-		if item.Key == "" || strings.HasPrefix(item.Key, "ip_") || item.Level != "error" {
+		if item.Key == "" || item.Level != "error" {
 			continue
 		}
 
 		l := entry.WithFields(log.Fields{
 			"key": item.Key,
 		})
-		l.Info("redo replication")
+		for _, re := range r.skipPatterns {
+			if re.Match([]byte(item.Key)) {
+				l.Debug("skip pattern matched")
 
+				continue loop
+			}
+		}
+
+		l.Info("redo replication")
 		dump := r.reader.Dump(ctx, item.Key)
 		if dump.Err() != nil {
 			l.Error(dump.Err())
@@ -165,5 +130,5 @@ func (r *Redoer) Redo(entry *log.Entry, redoFile string) {
 		}
 	}
 
-	cursorFile.WriteString(fmt.Sprint(r.cursor))
+	os.WriteFile(cursorFilename, []byte(fmt.Sprint(r.cursor)), 0666)
 }

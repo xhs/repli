@@ -9,5 +9,6 @@ type CommonConfig struct {
 	ReadTimeout     int      `long:"read-timeout" description:"Read timeout in seconds" value-name:"<SECONDS>" default:"5"`
 	WriteTimeout    int      `long:"write-timeout" description:"Write timeout in seconds" value-name:"<SECONDS>" default:"5"`
 	MaxRetries      int      `long:"max-retries" description:"Maximum retries of connecting before giving up" value-name:"<INT>" default:"10"`
-	SkipKeyPatterns []string `long:"skip-pattern" description:"Key patterns to skip" value-name:"<PATTERN>"`
+	KeyspacePattern string   `long:"keyspace-pattern" description:"Redis key pattern to match" value-name:"<GLOB-PATTERN>" default:"*"`
+	SkipKeyPatterns []string `long:"skip-pattern" description:"Key patterns to skip, can be specified multiple times" value-name:"<REGEXP>"`
 }
