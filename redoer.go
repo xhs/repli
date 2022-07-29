@@ -20,13 +20,14 @@ type RedoLog struct {
 }
 
 type Redoer struct {
-	cursor       int
-	skipPatterns []*regexp.Regexp
-	reader       *redis.Client
-	writer       RedisWriter
+	cursor            int
+	skipPatterns      []*regexp.Regexp
+	deleteMissingKeys bool
+	reader            *redis.Client
+	writer            RedisWriter
 }
 
-func NewRedoer(config *CommonConfig) *Redoer {
+func NewRedoer(config *CommonConfig, deleteMissingKeys bool) *Redoer {
 	var skipPatterns []*regexp.Regexp
 	for _, pattern := range config.SkipKeyPatterns {
 		re, err := regexp.Compile(pattern)
@@ -38,9 +39,10 @@ func NewRedoer(config *CommonConfig) *Redoer {
 	}
 
 	return &Redoer{
-		skipPatterns: skipPatterns,
-		reader:       config.Reader(),
-		writer:       config.Writer(),
+		skipPatterns:      skipPatterns,
+		deleteMissingKeys: deleteMissingKeys,
+		reader:            config.Reader(),
+		writer:            config.Writer(),
 	}
 }
 
@@ -109,9 +111,17 @@ loop:
 		l.Info("redo replication")
 		dump := r.reader.Dump(ctx, item.Key)
 		if dump.Err() != nil {
-			l.Error(dump.Err())
+			if r.deleteMissingKeys && dump.Err().Error() == "redis: nil" {
+				del := r.writer.Del(ctx, item.Key)
+				if del.Err() != nil {
+					l.Error(del.Err())
+				}
+			} else {
+				l.Error(dump.Err())
+			}
 			continue
 		}
+
 		dumped, err := dump.Bytes()
 		if err != nil {
 			l.Error(err)

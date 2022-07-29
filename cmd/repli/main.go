@@ -29,7 +29,7 @@ func main() {
 	})
 
 	if mode == "REDO" {
-		redoer := repli.NewRedoer(&config)
+		redoer := repli.NewRedoer(&config, redoConfig.DeleteMissingKeys)
 		defer redoer.Close()
 
 		redoer.Redo(l, redoConfig.RedoFile)
