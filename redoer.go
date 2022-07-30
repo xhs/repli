@@ -23,8 +23,8 @@ type Redoer struct {
 	cursor            int
 	skipPatterns      []*regexp.Regexp
 	deleteMissingKeys bool
-	reader            *redis.Client
-	writer            RedisWriter
+	redisReader       *redis.Client
+	redisWriter       RedisWriter
 }
 
 func NewRedoer(config *CommonConfig, deleteMissingKeys bool) *Redoer {
@@ -41,14 +41,14 @@ func NewRedoer(config *CommonConfig, deleteMissingKeys bool) *Redoer {
 	return &Redoer{
 		skipPatterns:      skipPatterns,
 		deleteMissingKeys: deleteMissingKeys,
-		reader:            config.Reader(),
-		writer:            config.Writer(),
+		redisReader:       config.Reader(),
+		redisWriter:       config.Writer(),
 	}
 }
 
 func (r *Redoer) Close() {
-	r.reader.Close()
-	r.writer.Close()
+	r.redisReader.Close()
+	r.redisWriter.Close()
 }
 
 func (r *Redoer) Redo(entry *log.Entry, redoFile string) {
@@ -109,10 +109,10 @@ loop:
 		}
 
 		l.Info("redo replication")
-		dump := r.reader.Dump(ctx, item.Key)
+		dump := r.redisReader.Dump(ctx, item.Key)
 		if dump.Err() != nil {
 			if r.deleteMissingKeys && dump.Err().Error() == "redis: nil" {
-				del := r.writer.Del(ctx, item.Key)
+				del := r.redisWriter.Del(ctx, item.Key)
 				if del.Err() != nil {
 					l.Error(del.Err())
 				}
@@ -128,13 +128,13 @@ loop:
 			continue
 		}
 
-		pttl := r.reader.PTTL(ctx, item.Key)
+		pttl := r.redisReader.PTTL(ctx, item.Key)
 		if pttl.Err() != nil {
 			l.Error(pttl.Err())
 			continue
 		}
 
-		restore := r.writer.RestoreReplace(ctx, item.Key, pttl.Val(), string(dumped))
+		restore := r.redisWriter.RestoreReplace(ctx, item.Key, pttl.Val(), string(dumped))
 		if restore.Err() != nil {
 			l.Error(restore.Err())
 			continue

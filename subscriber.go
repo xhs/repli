@@ -19,8 +19,9 @@ type Subscriber struct {
 	eventQueueSize int
 	keyPattern     string
 	skipPatterns   []*regexp.Regexp
-	C              chan *KeyspaceEvent
 	subscriber     *redis.Client
+	pubsub         *redis.PubSub
+	C              chan *KeyspaceEvent
 }
 
 func NewSubscriber(config *CommonConfig, eventQueueSize int) *Subscriber {
@@ -45,27 +46,27 @@ func NewSubscriber(config *CommonConfig, eventQueueSize int) *Subscriber {
 		eventQueueSize: eventQueueSize,
 		keyPattern:     fmt.Sprintf("__keyspace@%d__:%s", config.RedisDatabase, config.KeyspacePattern),
 		skipPatterns:   skipPatterns,
-		C:              make(chan *KeyspaceEvent),
 		subscriber:     subscriber,
+		C:              make(chan *KeyspaceEvent),
 	}
 }
 
-func (s *Subscriber) Close() error {
-	return s.subscriber.Close()
+func (s *Subscriber) Close() {
+	s.pubsub.Close()
+	s.subscriber.Close()
 }
 
 func (s *Subscriber) Run(l *log.Entry, metrics *Metrics) {
 	ctx := context.Background()
-	sub := s.subscriber.PSubscribe(ctx, s.keyPattern)
-	defer sub.Close()
+	s.pubsub = s.subscriber.PSubscribe(ctx, s.keyPattern)
 
 	// Wait for confirmation
-	_, err := sub.Receive(ctx)
+	_, err := s.pubsub.Receive(ctx)
 	if err != nil {
 		l.Fatal(err)
 	}
 
-	keyspaceEventCh := sub.Channel(redis.WithChannelSize(s.eventQueueSize))
+	keyspaceEventCh := s.pubsub.Channel(redis.WithChannelSize(s.eventQueueSize))
 loop:
 	for event := range keyspaceEventCh {
 		splits := strings.SplitN(event.Channel, ":", 2)

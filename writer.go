@@ -9,35 +9,10 @@ import (
 )
 
 type WriteCommand struct {
-	Timestamp int64 // TODO: ignore expired/expiring keys queued in batch
-	Command   string
-	Key       string
-	TTL       time.Duration
-	Bytes     []byte
-}
-
-func (w WriteCommand) Delete(key string) *WriteCommand {
-	w.Timestamp = time.Now().UnixMilli()
-	w.Command = "DELETE"
-	w.Key = key
-	return &w
-}
-
-func (w WriteCommand) Expire(key string, ttl time.Duration) *WriteCommand {
-	w.Timestamp = time.Now().UnixMilli()
-	w.Command = "EXPIRE"
-	w.Key = key
-	w.TTL = ttl
-	return &w
-}
-
-func (w WriteCommand) Restore(key string, ttl time.Duration, value []byte) *WriteCommand {
-	w.Timestamp = time.Now().UnixMilli()
-	w.Command = "RESTORE"
-	w.Key = key
-	w.TTL = ttl
-	w.Bytes = value
-	return &w
+	Command string
+	Key     string
+	TTL     time.Duration
+	Bytes   []byte
 }
 
 type Writer struct {
@@ -56,8 +31,33 @@ func NewWriter(config *CommonConfig, writeBatchSize, writeBatchLatency int) *Wri
 	}
 }
 
-func (w *Writer) Close() error {
-	return w.writer.Close()
+func (w *Writer) Close() {
+	close(w.C)
+	w.writer.Close()
+}
+
+func (w *Writer) Delete(key string) {
+	w.C <- &WriteCommand{
+		Command: "DELETE",
+		Key:     key,
+	}
+}
+
+func (w *Writer) Expire(key string, ttl time.Duration) {
+	w.C <- &WriteCommand{
+		Command: "EXPIRE",
+		Key:     key,
+		TTL:     ttl,
+	}
+}
+
+func (w *Writer) Restore(key string, ttl time.Duration, value []byte) {
+	w.C <- &WriteCommand{
+		Command: "RESTORE",
+		Key:     key,
+		TTL:     ttl,
+		Bytes:   value,
+	}
 }
 
 func (w *Writer) Run(l *log.Entry, metrics *Metrics) {

@@ -15,18 +15,6 @@ type ReadCommand struct {
 	Bytes   *redis.StringCmd
 }
 
-func (r ReadCommand) GetTTL(key string) *ReadCommand {
-	r.Command = "TTL"
-	r.Key = key
-	return &r
-}
-
-func (r ReadCommand) Dump(key string) *ReadCommand {
-	r.Command = "DUMP"
-	r.Key = key
-	return &r
-}
-
 type Reader struct {
 	readBatchSize    int
 	readBatchLatency int
@@ -45,11 +33,26 @@ func NewReader(config *CommonConfig, readBatchSize, readBatchLatency int, minTTL
 	}
 }
 
-func (r *Reader) Close() error {
-	return r.reader.Close()
+func (r *Reader) Close() {
+	close(r.C)
+	r.reader.Close()
 }
 
-func (r *Reader) Run(writeCh chan *WriteCommand, l *log.Entry, metrics *Metrics) {
+func (r *Reader) TTL(key string) {
+	r.C <- &ReadCommand{
+		Command: "TTL",
+		Key:     key,
+	}
+}
+
+func (r *Reader) Dump(key string) {
+	r.C <- &ReadCommand{
+		Command: "DUMP",
+		Key:     key,
+	}
+}
+
+func (r *Reader) Run(l *log.Entry, writer *Writer, metrics *Metrics) {
 	ctx := context.Background()
 
 	var commands []*ReadCommand
@@ -114,7 +117,7 @@ func (r *Reader) Run(writeCh chan *WriteCommand, l *log.Entry, metrics *Metrics)
 						}
 
 						ttl := time.Second * time.Duration(cmd.TTL.Val().Seconds()-(float64(r.minTTL-1)))
-						writeCh <- WriteCommand{}.Expire(cmd.Key, ttl)
+						writer.Expire(cmd.Key, ttl)
 					}
 				case "DUMP":
 					dumped, err := cmd.Bytes.Bytes()
@@ -134,7 +137,7 @@ func (r *Reader) Run(writeCh chan *WriteCommand, l *log.Entry, metrics *Metrics)
 
 					} else {
 						ttl := time.Millisecond * time.Duration(cmd.TTL.Val().Milliseconds())
-						writeCh <- WriteCommand{}.Restore(cmd.Key, ttl, dumped)
+						writer.Restore(cmd.Key, ttl, dumped)
 					}
 				}
 			}

@@ -7,14 +7,16 @@ import (
 	"github.com/xhs/repli"
 )
 
-var mode string
+var command string
 
 var config repli.CommonConfig
 var parser = flags.NewParser(&config, flags.Default)
 
 func init() {
 	log.SetLevel(log.InfoLevel)
-	log.SetFormatter(&log.JSONFormatter{})
+	log.SetFormatter(&log.JSONFormatter{
+		DisableHTMLEscape: true,
+	})
 }
 
 func main() {
@@ -27,61 +29,69 @@ func main() {
 		"source": config.SourceEndpoint,
 		"target": config.TargetEndpoint,
 	})
+	l.Debug(config)
 
-	if mode == "REDO" {
-		redoer := repli.NewRedoer(&config, redoConfig.DeleteMissingKeys)
+	if command == "REDO" {
+		redoer := repli.NewRedoer(&config, redoCommand.DeleteMissingKeys)
 		defer redoer.Close()
 
-		redoer.Redo(l, redoConfig.RedoFile)
-
+		redoer.Redo(l, redoCommand.RedoFile)
 		return
 	}
 
-	l.Info(config)
+	metrics := repli.NewMetrics(runCommand.Mode)
 
-	metrics := repli.NewMetrics()
-	subscriber := repli.NewSubscriber(&config, runConfig.EventQueueSize)
+	subscriber := repli.NewSubscriber(&config, runCommand.EventQueueSize)
 	defer subscriber.Close()
 
-	go subscriber.Run(l, metrics)
+	if runCommand.Mode != "live" {
+		scanner := repli.NewScanner(&config, runCommand.ReadBatchSize, runCommand.ReadBatchLatency, runCommand.WriteBatchSize, runCommand.WriteBatchLatency, runCommand.MinTTL)
+		defer scanner.Close()
 
-	for i := 0; i < runConfig.ReplicatorNumber; i++ {
-		go func() {
-			writer := repli.NewWriter(&config, runConfig.WriteBatchSize, runConfig.WriteBatchLatency)
-			defer writer.Close()
-
-			go writer.Run(l, metrics)
-
-			reader := repli.NewReader(&config, runConfig.ReadBatchSize, runConfig.ReadBatchLatency, runConfig.MinTTL)
-			defer reader.Close()
-
-			go reader.Run(writer.C, l, metrics)
-
-			for event := range subscriber.C {
-				metrics.Processed()
-
-				if event.Action == "expired" {
-					l.WithFields(log.Fields{
-						"key": event.Key,
-					}).Debug("expired key ignored")
-					continue
-				}
-
-				if event.Action == "del" {
-					metrics.Queried()
-					writer.C <- repli.WriteCommand{}.Delete(event.Key)
-					continue
-				}
-
-				if event.Action == "expire" {
-					reader.C <- repli.ReadCommand{}.GetTTL(event.Key)
-					continue
-				}
-
-				reader.C <- repli.ReadCommand{}.Dump(event.Key)
-			}
-		}()
+		go scanner.Run(l, metrics)
 	}
 
-	metrics.Report(subscriber.C, runConfig.ReportInterval, runConfig.EventQueueSize)
+	if runCommand.Mode != "snapshot" {
+		go subscriber.Run(l, metrics)
+
+		for i := 0; i < runCommand.ReplicatorNumber; i++ {
+			go func() {
+				writer := repli.NewWriter(&config, runCommand.WriteBatchSize, runCommand.WriteBatchLatency)
+				defer writer.Close()
+
+				go writer.Run(l, metrics)
+
+				reader := repli.NewReader(&config, runCommand.ReadBatchSize, runCommand.ReadBatchLatency, runCommand.MinTTL)
+				defer reader.Close()
+
+				go reader.Run(l, writer, metrics)
+
+				for event := range subscriber.C {
+					metrics.Processed()
+
+					if event.Action == "expired" {
+						l.WithFields(log.Fields{
+							"key": event.Key,
+						}).Debug("expired key ignored")
+						continue
+					}
+
+					if event.Action == "del" {
+						metrics.Queried()
+						writer.Delete(event.Key)
+						continue
+					}
+
+					if event.Action == "expire" {
+						reader.TTL(event.Key)
+						continue
+					}
+
+					reader.Dump(event.Key)
+				}
+			}()
+		}
+	}
+
+	metrics.Report(subscriber.C, runCommand.ReportInterval, runCommand.EventQueueSize)
 }
