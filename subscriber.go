@@ -52,7 +52,10 @@ func NewSubscriber(config *CommonConfig, eventQueueSize int) *Subscriber {
 }
 
 func (s *Subscriber) Close() {
-	s.pubsub.Close()
+	close(s.C)
+	if s.pubsub != nil {
+		s.pubsub.Close()
+	}
 	s.subscriber.Close()
 }
 
@@ -60,7 +63,7 @@ func (s *Subscriber) Run(l *log.Entry, metrics *Metrics) {
 	ctx := context.Background()
 	s.pubsub = s.subscriber.PSubscribe(ctx, s.keyPattern)
 
-	// Wait for confirmation
+	// Wait for PSUBSCRIBE confirmation
 	_, err := s.pubsub.Receive(ctx)
 	if err != nil {
 		l.Fatal(err)
