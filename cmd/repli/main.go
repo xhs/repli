@@ -93,5 +93,5 @@ func main() {
 		}
 	}
 
-	metrics.Report(subscriber.C, runCommand.ReportInterval, runCommand.EventQueueSize)
+	metrics.Run(subscriber.C, runCommand.ReportInterval, runCommand.EventQueueSize)
 }

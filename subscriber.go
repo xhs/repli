@@ -89,6 +89,7 @@ loop:
 		}
 		action := event.Payload
 
+		metrics.Modify(key, action)
 		s.C <- &KeyspaceEvent{key, action}
 		metrics.Received()
 	}

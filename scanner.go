@@ -62,6 +62,12 @@ func (s *Scanner) Run(l *log.Entry, metrics *Metrics) {
 
 		for _, key := range keys {
 			metrics.Scanned()
+			if metrics.IsDirty(key) {
+				l.WithFields(log.Fields{
+					"key": key,
+				}).Debug("discard dirty key")
+				continue
+			}
 
 			s.reader.Dump(key)
 		}
