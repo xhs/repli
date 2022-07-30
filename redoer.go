@@ -28,18 +28,8 @@ type Redoer struct {
 }
 
 func NewRedoer(config *CommonConfig, deleteMissingKeys bool) *Redoer {
-	var skipPatterns []*regexp.Regexp
-	for _, pattern := range config.SkipKeyPatterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			panic(err)
-		}
-
-		skipPatterns = append(skipPatterns, re)
-	}
-
 	return &Redoer{
-		skipPatterns:      skipPatterns,
+		skipPatterns:      CompileRegExpPatterns(config.SkipKeyPatterns),
 		deleteMissingKeys: deleteMissingKeys,
 		redisReader:       config.Reader(),
 		redisWriter:       config.Writer(),

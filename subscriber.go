@@ -32,20 +32,10 @@ func NewSubscriber(config *CommonConfig, eventQueueSize int) *Subscriber {
 		PoolSize:   1,
 	})
 
-	var skipPatterns []*regexp.Regexp
-	for _, pattern := range config.SkipKeyPatterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			panic(err)
-		}
-
-		skipPatterns = append(skipPatterns, re)
-	}
-
 	return &Subscriber{
 		eventQueueSize: eventQueueSize,
 		keyPattern:     fmt.Sprintf("__keyspace@%d__:%s", config.RedisDatabase, config.KeyspacePattern),
-		skipPatterns:   skipPatterns,
+		skipPatterns:   CompileRegExpPatterns(config.SkipKeyPatterns),
 		subscriber:     subscriber,
 		C:              make(chan *KeyspaceEvent),
 	}

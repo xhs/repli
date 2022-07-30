@@ -18,19 +18,9 @@ type Scanner struct {
 }
 
 func NewScanner(config *CommonConfig, readBatchSize, readBatchLatency int, writeBatchSize, writeBatchLatency int, minTTL int) *Scanner {
-	var skipPatterns []*regexp.Regexp
-	for _, pattern := range config.SkipKeyPatterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			panic(err)
-		}
-
-		skipPatterns = append(skipPatterns, re)
-	}
-
 	return &Scanner{
 		keyspacePattern: config.KeyspacePattern,
-		skipPatterns:    skipPatterns,
+		skipPatterns:    CompileRegExpPatterns(config.SkipKeyPatterns),
 		readBatchSize:   readBatchSize,
 		scanner:         config.Reader(),
 		reader:          NewReader(config, readBatchSize, readBatchLatency, minTTL),
